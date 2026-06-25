@@ -14,6 +14,58 @@
   #vr-mode { display: none; width: 100vw; height: 100vh; flex-direction: row; }
   #viewer-left { width: 50%; height: 100%; border-right: 2px solid #000; }
   #viewer-right { width: 50%; height: 100%; }
+
+  /* エンディング画面 */
+  #ending {
+    display: none;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    background: #000;
+    color: #fff;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    z-index: 500;
+    gap: 24px;
+  }
+  #ending h2 {
+    font-size: 22px;
+    font-weight: bold;
+    line-height: 1.6;
+  }
+  #ending p {
+    font-size: 14px;
+    color: #aaa;
+  }
+  #ending a.btn {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 14px 32px;
+    background: #4285f4;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 28px;
+    font-size: 16px;
+  }
+  #ending a.link {
+    color: #7af;
+    font-size: 13px;
+    word-break: break-all;
+    text-decoration: underline;
+  }
+  #ending button.replay {
+    margin-top: 8px;
+    padding: 10px 24px;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+
   #controls {
     position: fixed;
     bottom: 20px;
@@ -52,44 +104,28 @@
     width: 100vw; height: 100vh;
     z-index: 50;
   }
-  #gyro-notice {
-    display: none;
-    position: fixed;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    background: rgba(0,0,0,0.85);
-    color: #fff;
-    padding: 24px 32px;
-    border-radius: 14px;
-    text-align: center;
-    z-index: 300;
-    font-size: 16px;
-    line-height: 1.8;
-  }
-  #gyro-notice button {
-    margin-top: 14px;
-    padding: 10px 28px;
-    background: #4af;
-    border: none;
-    border-radius: 20px;
-    color: #fff;
-    font-size: 15px;
-    cursor: pointer;
-  }
 </style>
 </head>
 <body>
 <div id="progress"></div>
+
 <div id="normal-mode"><div id="viewer"></div></div>
 <div id="vr-mode">
   <div id="viewer-left"></div>
   <div id="viewer-right"></div>
 </div>
-<div id="vr-tap"></div>
-<div id="gyro-notice">
-  <div>ジャイロセンサーを使用します。<br>「許可する」を押してください。</div>
-  <button onclick="requestGyro()">許可する</button>
+
+<!-- エンディング -->
+<div id="ending">
+  <h2>More 360 Photos in Google</h2>
+  <p>セネガル灌漑プロジェクト 360度写真アルバム</p>
+  <a class="btn" href="https://photos.app.goo.gl/oV7kTd4Dt92XcfhRA" target="_blank">📷 Google Photos で見る</a>
+  <a class="link" href="https://photos.app.goo.gl/oV7kTd4Dt92XcfhRA" target="_blank">https://photos.app.goo.gl/oV7kTd4Dt92XcfhRA</a>
+  <button class="replay" onclick="replay()">↺ もう一度見る</button>
 </div>
+
+<div id="vr-tap"></div>
+
 <div id="controls">
   <button onclick="prevPhoto()">◀</button>
   <span id="counter">1 / 11</span>
@@ -106,6 +142,7 @@ const files = [
 ];
 
 const INTERVAL = 10000;
+const AUTO_ROTATE_SPEED = 3.6; // 10秒で一周(360度/100fps相当)
 let current = 0;
 let autoPlay = true;
 let timer = null;
@@ -113,15 +150,7 @@ let vrMode = false;
 let viewerNormal = null;
 let viewerL = null;
 let viewerR = null;
-let gyroEnabled = false;
-let gyroInterval = null;
 let controlsTimer = null;
-
-// ジャイロの現在値
-let gyroPitch = 0;
-let gyroYaw = 0;
-// キャリブレーション用オフセット
-let yawOffset = null;
 
 function updateCounter() {
   document.getElementById('counter').textContent = `${current + 1} / ${files.length}`;
@@ -134,10 +163,13 @@ function loadNormal(index) {
     type: 'equirectangular',
     panorama: files[index],
     autoLoad: true,
-    autoRotate: -2,
+    autoRotate: AUTO_ROTATE_SPEED,
+    autoRotateInactivityDelay: 1000,
     compass: false,
     showControls: false,
-    hfov: 100
+    hfov: 100,
+    pitch: 0,
+    yaw: 0
   });
 }
 
@@ -148,83 +180,63 @@ function loadVR(index) {
     type: 'equirectangular',
     panorama: files[index],
     autoLoad: true,
-    autoRotate: false,
+    autoRotate: AUTO_ROTATE_SPEED,
+    autoRotateInactivityDelay: 1000,
     compass: false,
     showControls: false,
     hfov: 90,
-    pitch: 0,   // 初期視点：水平
+    pitch: 0,
     yaw: 0
   };
   viewerL = pannellum.viewer('viewer-left', Object.assign({}, config));
   viewerR = pannellum.viewer('viewer-right', Object.assign({}, config));
 }
 
-function handleOrientation(e) {
-  if (!vrMode) return;
-
-  const alpha = e.alpha || 0; // 方位角 0-360
-  const beta  = e.beta  || 0; // 前後傾き -180〜180
-  const gamma = e.gamma || 0; // 左右傾き -90〜90
-
-  // 初回にyawのオフセットを記録（キャリブレーション）
-  if (yawOffset === null) {
-    yawOffset = alpha;
-  }
-
-  // スマホを横向き（VRゴーグル）に入れた場合：
-  // gammaが上下（pitch）、alphaが左右（yaw）に対応
-  const pitch = Math.max(-85, Math.min(85, -gamma));
-  const yaw   = (alpha - yawOffset + 360) % 360;
-
-  gyroPitch = pitch;
-  gyroYaw   = yaw;
+function loadPhoto(index) {
+  current = index;
+  updateCounter();
+  vrMode ? loadVR(index) : loadNormal(index);
 }
 
-function startGyroLoop() {
-  if (gyroInterval) clearInterval(gyroInterval);
-  gyroInterval = setInterval(() => {
-    if (!vrMode || !gyroEnabled) return;
-    try {
-      if (viewerL) { viewerL.setPitch(gyroPitch); viewerL.setYaw(gyroYaw); }
-      if (viewerR) { viewerR.setPitch(gyroPitch); viewerR.setYaw(gyroYaw); }
-    } catch(e) {}
-  }, 50);
+function showEnding() {
+  clearInterval(timer);
+  document.getElementById('ending').style.display = 'flex';
+  document.getElementById('controls').style.display = 'none';
+  document.getElementById('progress').style.display = 'none';
+  if (viewerNormal) { viewerNormal.destroy(); viewerNormal = null; }
+  if (viewerL) { viewerL.destroy(); viewerL = null; }
+  if (viewerR) { viewerR.destroy(); viewerR = null; }
 }
 
-function requestGyro() {
-  document.getElementById('gyro-notice').style.display = 'none';
-  if (typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function') {
-    DeviceOrientationEvent.requestPermission().then(state => {
-      if (state === 'granted') {
-        window.addEventListener('deviceorientation', handleOrientation, true);
-        gyroEnabled = true;
-        yawOffset = null;
-        startGyroLoop();
-      }
-    }).catch(console.error);
+function replay() {
+  document.getElementById('ending').style.display = 'none';
+  document.getElementById('controls').style.display = 'flex';
+  document.getElementById('progress').style.display = 'block';
+  current = 0;
+  autoPlay = true;
+  document.getElementById('autoBtn').textContent = '⏸ 停止';
+  loadPhoto(0);
+  startTimer();
+}
+
+function nextPhoto() {
+  resetTimer();
+  if (current >= files.length - 1) {
+    showEnding();
   } else {
-    window.addEventListener('deviceorientation', handleOrientation, true);
-    gyroEnabled = true;
-    yawOffset = null;
-    startGyroLoop();
+    loadPhoto(current + 1);
   }
 }
 
-function enableGyro() {
-  if (typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function') {
-    document.getElementById('gyro-notice').style.display = 'block';
-  } else {
-    requestGyro();
-  }
+function prevPhoto() {
+  resetTimer();
+  loadPhoto((current - 1 + files.length) % files.length);
 }
 
-function disableGyro() {
-  window.removeEventListener('deviceorientation', handleOrientation, true);
-  gyroEnabled = false;
-  yawOffset = null;
-  if (gyroInterval) { clearInterval(gyroInterval); gyroInterval = null; }
+function toggleAuto() {
+  autoPlay = !autoPlay;
+  document.getElementById('autoBtn').textContent = autoPlay ? '⏸ 停止' : '▶ 自動';
+  if (autoPlay) { startTimer(); } else { clearInterval(timer); }
 }
 
 function showControlsTemporarily() {
@@ -236,21 +248,6 @@ function showControlsTemporarily() {
     ctrl.style.opacity = '0';
     ctrl.style.pointerEvents = 'none';
   }, 3000);
-}
-
-function loadPhoto(index) {
-  current = index;
-  updateCounter();
-  vrMode ? loadVR(index) : loadNormal(index);
-}
-
-function nextPhoto() { resetTimer(); loadPhoto((current + 1) % files.length); }
-function prevPhoto() { resetTimer(); loadPhoto((current - 1 + files.length) % files.length); }
-
-function toggleAuto() {
-  autoPlay = !autoPlay;
-  document.getElementById('autoBtn').textContent = autoPlay ? '⏸ 停止' : '▶ 自動';
-  if (autoPlay) { startTimer(); } else { clearInterval(timer); }
 }
 
 function toggleVR() {
@@ -269,7 +266,6 @@ function toggleVR() {
     tapEl.style.display = 'block';
     if (viewerNormal) { viewerNormal.destroy(); viewerNormal = null; }
     loadVR(current);
-    enableGyro();
     ctrl.style.opacity = '1';
     controlsTimer = setTimeout(() => {
       ctrl.style.opacity = '0';
@@ -287,14 +283,19 @@ function toggleVR() {
     clearTimeout(controlsTimer);
     if (viewerL) { viewerL.destroy(); viewerL = null; }
     if (viewerR) { viewerR.destroy(); viewerR = null; }
-    disableGyro();
     loadNormal(current);
   }
 }
 
 function startTimer() {
   clearInterval(timer);
-  timer = setInterval(() => loadPhoto((current + 1) % files.length), INTERVAL);
+  timer = setInterval(() => {
+    if (current >= files.length - 1) {
+      showEnding();
+    } else {
+      loadPhoto(current + 1);
+    }
+  }, INTERVAL);
 }
 
 function resetTimer() {
