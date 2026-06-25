@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Senegal 360 Tour</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"/>
+<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; font-family: sans-serif; overflow: hidden; }
+
+  /* 通常モード */
+  #normal-mode { width: 100vw; height: 100vh; display: block; }
+  #viewer { width: 100%; height: 100%; }
+
+  /* VRモード：左右分割 */
+  #vr-mode { display: none; width: 100vw; height: 100vh; flex-direction: row; }
+  #viewer-left { width: 50%; height: 100%; border-right: 2px solid #000; }
+  #viewer-right { width: 50%; height: 100%; }
+
+  #controls {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    background: rgba(0,0,0,0.6);
+    padding: 10px 16px;
+    border-radius: 30px;
+    z-index: 100;
+  }
+  #controls button {
+    background: rgba(255,255,255,0.2);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.4);
+    padding: 8px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  #controls button:hover { background: rgba(255,255,255,0.4); }
+  #vrBtn.active { background: rgba(100,180,255,0.6); }
+  #counter { color: #fff; font-size: 14px; min-width: 55px; text-align: center; }
+  #progress {
+    position: fixed; top: 0; left: 0;
+    height: 3px; background: #4af;
+    transition: width 0.3s; z-index: 200;
+  }
+</style>
+</head>
+<body>
+<div id="progress"></div>
+
+<div id="normal-mode">
+  <div id="viewer"></div>
+</div>
+
+<div id="vr-mode">
+  <div id="viewer-left"></div>
+  <div id="viewer-right"></div>
+</div>
+
+<div id="controls">
+  <button onclick="prevPhoto()">◀</button>
+  <span id="counter">1 / 11</span>
+  <button onclick="nextPhoto()">▶</button>
+  <button onclick="toggleAuto()" id="autoBtn">⏸ 停止</button>
+  <button onclick="toggleVR()" id="vrBtn">👓 VR</button>
+</div>
+
+<script>
+const files = [
+  "R0015672.jpg",
+  "R0015702.JPG",
+  "R0015719.JPG",
+  "R0015726.JPG",
+  "R0015749.JPG",
+  "R0015754.JPG",
+  "R0015768.JPG",
+  "R0015785.JPG",
+  "R0015806.JPG",
+  "R0015818.JPG",
+  "R0015878.jpg"
+];
+
+const INTERVAL = 10000;
+let current = 0;
+let autoPlay = true;
+let timer = null;
+let vrMode = false;
+let viewerNormal = null;
+let viewerL = null;
+let viewerR = null;
+let syncLock = false;
+
+function updateCounter() {
+  document.getElementById('counter').textContent = `${current + 1} / ${files.length}`;
+  document.getElementById('progress').style.width = ((current + 1) / files.length * 100) + '%';
+}
+
+function loadNormal(index) {
+  if (viewerNormal) { viewerNormal.destroy(); viewerNormal = null; }
+  viewerNormal = pannellum.viewer('viewer', {
+    type: 'equirectangular',
+    panorama: files[index],
+    autoLoad: true,
+    autoRotate: -2,
+    compass: false,
+    showControls: false,
+    hfov: 100
+  });
+}
+
+function loadVR(index) {
+  if (viewerL) { viewerL.destroy(); viewerL = null; }
+  if (viewerR) { viewerR.destroy(); viewerR = null; }
+
+  const config = {
+    type: 'equirectangular',
+    panorama: files[index],
+    autoLoad: true,
+    autoRotate: -2,
+    compass: false,
+    showControls: false,
+    hfov: 120
+  };
+
+  viewerL = pannellum.viewer('viewer-left', Object.assign({}, config));
+  viewerR = pannellum.viewer('viewer-right', Object.assign({}, config));
+
+  // 左右の視点を同期
+  viewerL.on('mousedown', () => syncViews(viewerL, viewerR));
+  viewerR.on('mousedown', () => syncViews(viewerR, viewerL));
+}
+
+function syncViews(source, target) {
+  if (syncLock) return;
+  syncLock = true;
+  const interval = setInterval(() => {
+    try {
+      target.setPitch(source.getPitch());
+      target.setYaw(source.getYaw());
+    } catch(e) {}
+  }, 50);
+  setTimeout(() => { clearInterval(interval); syncLock = false; }, 3000);
+}
+
+function loadPhoto(index) {
+  current = index;
+  updateCounter();
+  if (vrMode) {
+    loadVR(index);
+  } else {
+    loadNormal(index);
+  }
+}
+
+function nextPhoto() {
+  resetTimer();
+  loadPhoto((current + 1) % files.length);
+}
+
+function prevPhoto() {
+  resetTimer();
+  loadPhoto((current - 1 + files.length) % files.length);
+}
+
+function toggleAuto() {
+  autoPlay = !autoPlay;
+  document.getElementById('autoBtn').textContent = autoPlay ? '⏸ 停止' : '▶ 自動';
+  if (autoPlay) { startTimer(); } else { clearInterval(timer); }
+}
+
+function toggleVR() {
+  vrMode = !vrMode;
+  const btn = document.getElementById('vrBtn');
+  btn.textContent = vrMode ? '👁 通常' : '👓 VR';
+  btn.classList.toggle('active', vrMode);
+
+  const normalEl = document.getElementById('normal-mode');
+  const vrEl = document.getElementById('vr-mode');
+
+  if (vrMode) {
+    normalEl.style.display = 'none';
+    vrEl.style.display = 'flex';
+    if (viewerNormal) { viewerNormal.destroy(); viewerNormal = null; }
+    loadVR(current);
+  } else {
+    vrEl.style.display = 'none';
+    normalEl.style.display = 'block';
+    if (viewerL) { viewerL.destroy(); viewerL = null; }
+    if (viewerR) { viewerR.destroy(); viewerR = null; }
+    loadNormal(current);
+  }
+}
+
+function startTimer() {
+  clearInterval(timer);
+  timer = setInterval(() => {
+    loadPhoto((current + 1) % files.length);
+  }, INTERVAL);
+}
+
+function resetTimer() {
+  if (autoPlay) { startTimer(); }
+}
+
+loadPhoto(0);
+startTimer();
+</script>
+</body>
+</html>
