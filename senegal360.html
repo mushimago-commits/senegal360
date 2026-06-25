@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Senegal 360 Tour</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"/>
 <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
@@ -10,11 +10,9 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #000; font-family: sans-serif; overflow: hidden; }
 
-  /* 通常モード */
   #normal-mode { width: 100vw; height: 100vh; display: block; }
   #viewer { width: 100%; height: 100%; }
 
-  /* VRモード：左右分割 */
   #vr-mode { display: none; width: 100vw; height: 100vh; flex-direction: row; }
   #viewer-left { width: 50%; height: 100%; border-right: 2px solid #000; }
   #viewer-right { width: 50%; height: 100%; }
@@ -31,6 +29,7 @@
     padding: 10px 16px;
     border-radius: 30px;
     z-index: 100;
+    transition: opacity 0.3s;
   }
   #controls button {
     background: rgba(255,255,255,0.2);
@@ -49,6 +48,41 @@
     height: 3px; background: #4af;
     transition: width 0.3s; z-index: 200;
   }
+
+  /* VRモード時のタップで一時表示するオーバーレイ */
+  #vr-tap {
+    display: none;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    z-index: 50;
+  }
+
+  #gyro-notice {
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.8);
+    color: #fff;
+    padding: 20px 30px;
+    border-radius: 12px;
+    text-align: center;
+    z-index: 300;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  #gyro-notice button {
+    margin-top: 14px;
+    padding: 10px 24px;
+    background: #4af;
+    border: none;
+    border-radius: 20px;
+    color: #fff;
+    font-size: 15px;
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -61,6 +95,15 @@
 <div id="vr-mode">
   <div id="viewer-left"></div>
   <div id="viewer-right"></div>
+</div>
+
+<!-- VRモード中タップでボタン表示 -->
+<div id="vr-tap"></div>
+
+<!-- iOSジャイロ許可ダイアログ -->
+<div id="gyro-notice">
+  <div>ジャイロセンサーを使用します。<br>「許可」を押してください。</div>
+  <button onclick="requestGyro()">許可する</button>
 </div>
 
 <div id="controls">
@@ -94,7 +137,12 @@ let vrMode = false;
 let viewerNormal = null;
 let viewerL = null;
 let viewerR = null;
-let syncLock = false;
+let gyroEnabled = false;
+let currentYaw = 0;
+let currentPitch = 0;
+let gyroInterval = null;
+let controlsVisible = true;
+let controlsTimer = null;
 
 function updateCounter() {
   document.getElementById('counter').textContent = `${current + 1} / ${files.length}`;
@@ -122,30 +170,81 @@ function loadVR(index) {
     type: 'equirectangular',
     panorama: files[index],
     autoLoad: true,
-    autoRotate: -2,
+    autoRotate: false,
     compass: false,
     showControls: false,
-    hfov: 120
+    hfov: 90,
+    pitch: currentPitch,
+    yaw: currentYaw
   };
 
   viewerL = pannellum.viewer('viewer-left', Object.assign({}, config));
   viewerR = pannellum.viewer('viewer-right', Object.assign({}, config));
-
-  // 左右の視点を同期
-  viewerL.on('mousedown', () => syncViews(viewerL, viewerR));
-  viewerR.on('mousedown', () => syncViews(viewerR, viewerL));
 }
 
-function syncViews(source, target) {
-  if (syncLock) return;
-  syncLock = true;
-  const interval = setInterval(() => {
+// ジャイロで左右の視点を更新
+function startGyro() {
+  if (gyroInterval) clearInterval(gyroInterval);
+  gyroInterval = setInterval(() => {
+    if (!vrMode || !gyroEnabled) return;
     try {
-      target.setPitch(source.getPitch());
-      target.setYaw(source.getYaw());
+      if (viewerL) {
+        viewerL.setPitch(currentPitch);
+        viewerL.setYaw(currentYaw);
+      }
+      if (viewerR) {
+        viewerR.setPitch(currentPitch);
+        viewerR.setYaw(currentYaw);
+      }
     } catch(e) {}
   }, 50);
-  setTimeout(() => { clearInterval(interval); syncLock = false; }, 3000);
+}
+
+function handleOrientation(e) {
+  // alpha: z軸回転(方位), beta: x軸(前後傾き), gamma: y軸(左右傾き)
+  const alpha = e.alpha || 0;
+  const beta  = e.beta  || 0;
+  const gamma = e.gamma || 0;
+
+  // スマホを横向きVRゴーグルに入れた場合の変換
+  currentYaw   = alpha;
+  currentPitch = Math.max(-90, Math.min(90, beta - 90));
+}
+
+function requestGyro() {
+  document.getElementById('gyro-notice').style.display = 'none';
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    // iOS 13+
+    DeviceOrientationEvent.requestPermission().then(state => {
+      if (state === 'granted') {
+        window.addEventListener('deviceorientation', handleOrientation);
+        gyroEnabled = true;
+        startGyro();
+      }
+    }).catch(console.error);
+  } else {
+    // Android・その他
+    window.addEventListener('deviceorientation', handleOrientation);
+    gyroEnabled = true;
+    startGyro();
+  }
+}
+
+function enableGyro() {
+  // iOSは許可ダイアログ表示、Androidは直接有効化
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    document.getElementById('gyro-notice').style.display = 'block';
+  } else {
+    requestGyro();
+  }
+}
+
+function disableGyro() {
+  window.removeEventListener('deviceorientation', handleOrientation);
+  gyroEnabled = false;
+  if (gyroInterval) { clearInterval(gyroInterval); gyroInterval = null; }
 }
 
 function loadPhoto(index) {
@@ -174,25 +273,58 @@ function toggleAuto() {
   if (autoPlay) { startTimer(); } else { clearInterval(timer); }
 }
 
+// VRモード中タップでボタン一時表示
+function showControlsTemporarily() {
+  const ctrl = document.getElementById('controls');
+  ctrl.style.opacity = '1';
+  ctrl.style.pointerEvents = 'auto';
+  clearTimeout(controlsTimer);
+  controlsTimer = setTimeout(() => {
+    ctrl.style.opacity = '0';
+    ctrl.style.pointerEvents = 'none';
+  }, 3000);
+}
+
 function toggleVR() {
   vrMode = !vrMode;
   const btn = document.getElementById('vrBtn');
-  btn.textContent = vrMode ? '👁 通常' : '👓 VR';
-  btn.classList.toggle('active', vrMode);
-
   const normalEl = document.getElementById('normal-mode');
   const vrEl = document.getElementById('vr-mode');
+  const tapEl = document.getElementById('vr-tap');
+  const ctrl = document.getElementById('controls');
 
   if (vrMode) {
+    btn.textContent = '👁 通常';
+    btn.classList.add('active');
     normalEl.style.display = 'none';
     vrEl.style.display = 'flex';
+    tapEl.style.display = 'block';
     if (viewerNormal) { viewerNormal.destroy(); viewerNormal = null; }
     loadVR(current);
+    enableGyro();
+
+    // ボタンを3秒後に非表示
+    ctrl.style.opacity = '1';
+    controlsTimer = setTimeout(() => {
+      ctrl.style.opacity = '0';
+      ctrl.style.pointerEvents = 'none';
+    }, 3000);
+
+    // タップで再表示
+    tapEl.addEventListener('click', showControlsTemporarily);
+
   } else {
+    btn.textContent = '👓 VR';
+    btn.classList.remove('active');
     vrEl.style.display = 'none';
     normalEl.style.display = 'block';
+    tapEl.style.display = 'none';
+    ctrl.style.opacity = '1';
+    ctrl.style.pointerEvents = 'auto';
+    clearTimeout(controlsTimer);
     if (viewerL) { viewerL.destroy(); viewerL = null; }
     if (viewerR) { viewerR.destroy(); viewerR = null; }
+    disableGyro();
     loadNormal(current);
   }
 }
